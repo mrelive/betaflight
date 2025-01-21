@@ -1052,6 +1052,11 @@ static void osdElementFlymode(osdElementParms_t *element)
         strcpy(element->buff, "HOR ");
     } else if (IS_RC_MODE_ACTIVE(BOXACROTRAINER)) {
         strcpy(element->buff, "ATRN");
+#ifdef USE_CHIRP
+    // the additional check for pidChirpIsFinished() is to have visual feedback for user that don't have warnings enabled in their googles
+    } else if (FLIGHT_MODE(CHIRP_MODE) && !pidChirpIsFinished()) {
+        strcpy(element->buff, "CHIR");
+#endif
     } else if (airmodeIsEnabled()) {
         strcpy(element->buff, "AIR ");
     } else {

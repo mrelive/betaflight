@@ -1,0 +1,198 @@
+name: Echo Fork Build and Release
+
+on:
+  push:
+    branches:
+      - echo-chirp-backport
+  workflow_dispatch:
+    inputs:
+      release_build:
+        description: Build without revision suffix (stable-style)
+        required: true
+        default: false
+        type: boolean
+      publish_release:
+        description: Publish a GitHub release in this fork
+        required: true
+        default: false
+        type: boolean
+      tag_name:
+        description: Optional tag name for release (auto-generated if blank)
+        required: false
+        default: ""
+        type: string
+      prerelease:
+        description: Mark release as prerelease
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-22.04
+    outputs:
+      targets: ${{ steps.get-targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache build toolchain
+        uses: actions/cache@v4
+        id: cache-toolchain
+        with:
+          path: tools
+          key: ${{ runner.os }}-${{ hashFiles('mk/tools.mk') }}
+
+      - name: Download and install toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: make arm_sdk_install
+
+      - name: Hydrate configuration
+        run: make configs
+
+      - name: Get all official build targets
+        id: get-targets
+        run: echo "targets=$(make targets-ci-print | jq -R -c 'split(" ")')" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build
+    needs: setup
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch toolchain from cache
+        uses: actions/cache@v4
+        id: cache-toolchain
+        with:
+          path: tools
+          key: ${{ runner.os }}-${{ hashFiles('mk/tools.mk') }}
+
+      - name: Hydrate configuration
+        run: make configs
+
+      - name: Build target (without revision)
+        if: inputs.release_build == true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.target }}
+
+      - name: Build target (with revision)
+        if: inputs.release_build != true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.target }}_rev
+
+      - name: Publish build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Assets-${{ strategy.job-index }}
+          path: obj/*.hex
+          retention-days: 60
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y libblocksruntime-dev clang-15
+
+      - name: Run sanity checks
+        run: make EXTRA_FLAGS=-Werror checks
+
+      - name: Run all unit tests
+        run: make EXTRA_FLAGS=-Werror test-all
+
+  result:
+    name: Complete
+    needs: [build, test]
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check build matrix result
+        if: ${{ needs.build.result != 'success' }}
+        run: exit 1
+
+      - name: Check test result
+        if: ${{ needs.test.result != 'success' }}
+        run: exit 1
+
+  package:
+    name: Package and Optional Release
+    needs: result
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Assets-*
+          merge-multiple: true
+          path: Assets
+
+      - name: Verify assets
+        run: |
+          set -euo pipefail
+          ls -al Assets
+          count=$(find Assets -maxdepth 1 -type f -name '*.hex' | wc -l)
+          echo "HEX_COUNT=$count"
+          if [ "$count" -eq 0 ]; then
+            echo "No HEX artifacts were downloaded."
+            exit 1
+          fi
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd Assets
+          sha256sum *.hex > checksums.sha256
+          ls -al
+
+      - name: Upload consolidated artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-fork-assets
+          path: |
+            Assets/*.hex
+            Assets/checksums.sha256
+          retention-days: 30
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_TAG='${{ inputs.tag_name }}'
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            DATE_UTC=$(date -u +%Y%m%d)
+            TAG="echo-${DATE_UTC}.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release (optional)
+        if: ${{ inputs.publish_release == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            Assets/*.hex
+            Assets/checksums.sha256
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          body: |
+            Echo fork automated build.
+
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

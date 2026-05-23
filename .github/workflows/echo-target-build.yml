@@ -1,0 +1,172 @@
+name: Echo On-Demand Target Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target board config (for example CRAZYBEEF4DX)
+        required: true
+        type: string
+      release_tag:
+        description: Release tag to upload artifacts to (for example 5.0)
+        required: true
+        default: "5.0"
+        type: string
+      extra_flags:
+        description: Extra compiler flags (for example -DUSE_GPS -DUSE_LED_STRIP)
+        required: false
+        default: ""
+        type: string
+      upload_to_release:
+        description: Upload built firmware to the selected release tag
+        required: true
+        default: true
+        type: boolean
+      create_release_if_missing:
+        description: Create release tag if it does not already exist
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark created release as prerelease (only when release must be created)
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-target:
+    name: Build ${{ inputs.target }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        id: cache-toolchain
+        with:
+          path: tools
+          key: ${{ runner.os }}-${{ hashFiles('mk/tools.mk') }}
+
+      - name: Install toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: make arm_sdk_install
+
+      - name: Hydrate board configs
+        run: make configs
+
+      - name: Validate target exists
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_raw='${{ inputs.target }}'
+          target_trimmed=$(echo "$target_raw" | xargs)
+          if [ -z "$target_trimmed" ]; then
+            echo "Input target cannot be empty"
+            exit 1
+          fi
+
+          target_upper=$(echo "$target_trimmed" | tr '[:lower:]' '[:upper:]')
+          available_targets=$(make targets-ci-board-print)
+          if ! printf '%s\n' "$available_targets" | tr ' ' '\n' | grep -Fxq "$target_upper"; then
+            echo "Target '$target_upper' was not found in targets-ci-board-print"
+            exit 1
+          fi
+
+          echo "target=$target_upper" >> "$GITHUB_OUTPUT"
+
+      - name: Build selected target
+        shell: bash
+        env:
+          TARGET: ${{ steps.validate.outputs.target }}
+          EXTRA_FLAGS_INPUT: ${{ inputs.extra_flags }}
+        run: |
+          set -euo pipefail
+
+          # Keep Werror by default; append any user-requested feature flags.
+          extra_flags="-Werror"
+          if [ -n "${EXTRA_FLAGS_INPUT}" ]; then
+            extra_flags="${extra_flags} ${EXTRA_FLAGS_INPUT}"
+          fi
+
+          make EXTRA_FLAGS="$extra_flags" "$TARGET"
+
+      - name: Collect build artifacts
+        id: collect
+        shell: bash
+        env:
+          TARGET: ${{ steps.validate.outputs.target }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXTRA_FLAGS_INPUT: ${{ inputs.extra_flags }}
+        run: |
+          set -euo pipefail
+          mkdir -p Assets
+
+          hex_file=$(find obj -maxdepth 1 -type f -name "*_${TARGET}*.hex" | head -n 1 || true)
+          if [ -z "$hex_file" ]; then
+            echo "No .hex output found for target ${TARGET}"
+            exit 1
+          fi
+
+          file_name=$(basename "$hex_file")
+          cp "$hex_file" "Assets/$file_name"
+          echo "file_name=$file_name" >> "$GITHUB_OUTPUT"
+
+          sha256sum "Assets/$file_name" > "Assets/${file_name}.sha256"
+
+            FILE_NAME="$file_name" python3 -c 'import json, os; from datetime import datetime; metadata={"target":os.environ["TARGET"],"releaseTag":os.environ["RELEASE_TAG"],"extraFlags":os.environ.get("EXTRA_FLAGS_INPUT", ""),"artifact":os.environ["FILE_NAME"],"commit":os.environ["GITHUB_SHA"],"runId":os.environ["GITHUB_RUN_ID"],"builtAtUtc":datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}; print(json.dumps(metadata, indent=2))' > Assets/echo-target-build-meta.json
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-target-${{ steps.validate.outputs.target }}-${{ github.run_id }}
+          path: |
+            Assets/*.hex
+            Assets/*.sha256
+            Assets/echo-target-build-meta.json
+          retention-days: 30
+
+      - name: Ensure release exists
+        if: ${{ inputs.upload_to_release == true && inputs.create_release_if_missing == true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists"
+            exit 0
+          fi
+
+          if [ "$PRERELEASE" = "true" ]; then
+            gh release create "$RELEASE_TAG" \
+              --title "ECHO CORP Firmware ${RELEASE_TAG}" \
+              --notes "Automated on-demand target build" \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "ECHO CORP Firmware ${RELEASE_TAG}" \
+              --notes "Automated on-demand target build"
+          fi
+
+      - name: Upload to release
+        if: ${{ inputs.upload_to_release == true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            Assets/*.hex \
+            Assets/*.sha256 \
+            Assets/echo-target-build-meta.json \
+            --clobber

@@ -612,6 +612,10 @@ targets:
 targets-ci-print:
 	@echo $(CI_TARGETS)
 
+## targets-ci-board-print : print all board config names (for per-board release builds)
+targets-ci-board-print:
+	@echo $(BASE_CONFIGS)
+
 ## target-mcu        : print the MCU type of the target
 target-mcu:
 	@echo "$(TARGET_MCU_FAMILY) : $(TARGET_MCU)"

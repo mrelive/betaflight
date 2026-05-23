@@ -35,7 +35,11 @@ jobs:
     name: Setup
     runs-on: ubuntu-22.04
     outputs:
-      targets: ${{ steps.get-targets.outputs.targets }}
+      ci_targets: ${{ steps.get-targets.outputs.ci_targets }}
+      release_shard_0: ${{ steps.get-targets.outputs.release_shard_0 }}
+      release_shard_1: ${{ steps.get-targets.outputs.release_shard_1 }}
+      release_shard_2: ${{ steps.get-targets.outputs.release_shard_2 }}
+      release_board_count: ${{ steps.get-targets.outputs.release_board_count }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,17 +57,58 @@ jobs:
       - name: Hydrate configuration
         run: make configs
 
+      - name: Cache hydrated board config repo
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/cache@v4
+        with:
+          path: src/config
+          key: ${{ runner.os }}-bf-config-${{ hashFiles('mk/config.mk') }}
+
       - name: Get all official build targets
         id: get-targets
-        run: echo "targets=$(make targets-ci-print | jq -R -c 'split(" ")')" >> "$GITHUB_OUTPUT"
+        run: echo "ci_targets=$(make targets-ci-print | jq -R -c 'split(" ")')" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build
+      - name: Get release board matrix shards
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          boards_json=$(make targets-ci-board-print | jq -R -c 'split(" ") | map(select(length > 0))')
+          board_count=$(echo "$boards_json" | jq 'length')
+          mapfile -t boards < <(echo "$boards_json" | jq -r '.[]')
+
+          shard0=()
+          shard1=()
+          shard2=()
+
+          for index in "${!boards[@]}"; do
+            board="${boards[$index]}"
+            case $((index % 3)) in
+              0) shard0+=("$board") ;;
+              1) shard1+=("$board") ;;
+              2) shard2+=("$board") ;;
+            esac
+          done
+
+          shard0_json=$(printf '%s\n' "${shard0[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          shard1_json=$(printf '%s\n' "${shard1[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          shard2_json=$(printf '%s\n' "${shard2[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "release_board_count=$board_count" >> "$GITHUB_OUTPUT"
+          echo "Detected $board_count board configs for release build"
+          echo "release_shard_0=$shard0_json" >> "$GITHUB_OUTPUT"
+          echo "release_shard_1=$shard1_json" >> "$GITHUB_OUTPUT"
+          echo "release_shard_2=$shard2_json" >> "$GITHUB_OUTPUT"
+
+  build-ci:
+    name: Build CI (${{ matrix.target }})
+    if: ${{ github.event_name == 'push' }}
     needs: setup
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        target: ${{ fromJson(needs.setup.outputs.targets) }}
+        target: ${{ fromJson(needs.setup.outputs.ci_targets) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -79,18 +124,147 @@ jobs:
         run: make configs
 
       - name: Build target (without revision)
-        if: inputs.release_build == true
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_build == true }}
         run: make EXTRA_FLAGS=-Werror ${{ matrix.target }}
 
       - name: Build target (with revision)
-        if: inputs.release_build != true
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_build != true) }}
         run: make EXTRA_FLAGS=-Werror ${{ matrix.target }}_rev
 
       - name: Publish build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Assets-${{ strategy.job-index }}
+          name: Assets-CI-${{ strategy.job-index }}
           path: obj/*.hex
+          retention-days: 60
+
+  build-release-shard-0:
+    name: Build Release Boards A (${{ matrix.config }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: setup
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJson(needs.setup.outputs.release_shard_0) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch toolchain from cache
+        uses: actions/cache@v4
+        id: cache-toolchain
+        with:
+          path: tools
+          key: ${{ runner.os }}-${{ hashFiles('mk/tools.mk') }}
+
+      - name: Fetch hydrated board config repo cache
+        uses: actions/cache@v4
+        with:
+          path: src/config
+          key: ${{ runner.os }}-bf-config-${{ hashFiles('mk/config.mk') }}
+
+      - name: Build board config (without revision)
+        if: inputs.release_build == true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.config }}
+
+      - name: Build board config (with revision)
+        if: inputs.release_build != true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.config }}_rev
+
+      - name: Publish board build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Assets-BOARD-A-${{ strategy.job-index }}
+          path: |
+            obj/*.hex
+            obj/*_${{ matrix.config }}*
+          retention-days: 60
+
+  build-release-shard-1:
+    name: Build Release Boards B (${{ matrix.config }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: setup
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJson(needs.setup.outputs.release_shard_1) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch toolchain from cache
+        uses: actions/cache@v4
+        id: cache-toolchain
+        with:
+          path: tools
+          key: ${{ runner.os }}-${{ hashFiles('mk/tools.mk') }}
+
+      - name: Fetch hydrated board config repo cache
+        uses: actions/cache@v4
+        with:
+          path: src/config
+          key: ${{ runner.os }}-bf-config-${{ hashFiles('mk/config.mk') }}
+
+      - name: Build board config (without revision)
+        if: inputs.release_build == true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.config }}
+
+      - name: Build board config (with revision)
+        if: inputs.release_build != true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.config }}_rev
+
+      - name: Publish board build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Assets-BOARD-B-${{ strategy.job-index }}
+          path: |
+            obj/*.hex
+            obj/*_${{ matrix.config }}*
+          retention-days: 60
+
+  build-release-shard-2:
+    name: Build Release Boards C (${{ matrix.config }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: setup
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJson(needs.setup.outputs.release_shard_2) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch toolchain from cache
+        uses: actions/cache@v4
+        id: cache-toolchain
+        with:
+          path: tools
+          key: ${{ runner.os }}-${{ hashFiles('mk/tools.mk') }}
+
+      - name: Fetch hydrated board config repo cache
+        uses: actions/cache@v4
+        with:
+          path: src/config
+          key: ${{ runner.os }}-bf-config-${{ hashFiles('mk/config.mk') }}
+
+      - name: Build board config (without revision)
+        if: inputs.release_build == true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.config }}
+
+      - name: Build board config (with revision)
+        if: inputs.release_build != true
+        run: make EXTRA_FLAGS=-Werror ${{ matrix.config }}_rev
+
+      - name: Publish board build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Assets-BOARD-C-${{ strategy.job-index }}
+          path: |
+            obj/*.hex
+            obj/*_${{ matrix.config }}*
           retention-days: 60
 
   test:
@@ -110,12 +284,24 @@ jobs:
 
   result:
     name: Complete
-    needs: [build, test]
+    needs: [build-ci, build-release-shard-0, build-release-shard-1, build-release-shard-2, test]
     if: ${{ always() }}
     runs-on: ubuntu-22.04
     steps:
       - name: Check build matrix result
-        if: ${{ needs.build.result != 'success' }}
+        if: ${{ github.event_name == 'push' && needs.build-ci.result != 'success' }}
+        run: exit 1
+
+      - name: Check release matrix result shard 0
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.build-release-shard-0.result != 'success' }}
+        run: exit 1
+
+      - name: Check release matrix result shard 1
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.build-release-shard-1.result != 'success' }}
+        run: exit 1
+
+      - name: Check release matrix result shard 2
+        if: ${{ github.event_name == 'workflow_dispatch' && needs.build-release-shard-2.result != 'success' }}
         run: exit 1
 
       - name: Check test result

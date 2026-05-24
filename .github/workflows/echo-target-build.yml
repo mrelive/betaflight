@@ -72,9 +72,14 @@ jobs:
           fi
 
           target_upper=$(echo "$target_trimmed" | tr '[:lower:]' '[:upper:]')
-          available_targets=$(make targets-ci-board-print)
+          target_list_cmd="targets-ci-board-print"
+          if ! make -s "$target_list_cmd" >/dev/null 2>&1; then
+            target_list_cmd="targets-ci-print"
+          fi
+
+          available_targets=$(make -s "$target_list_cmd")
           if ! printf '%s\n' "$available_targets" | tr ' ' '\n' | grep -Fxq "$target_upper"; then
-            echo "Target '$target_upper' was not found in targets-ci-board-print"
+            echo "Target '$target_upper' was not found in ${target_list_cmd}"
             exit 1
           fi
 
@@ -119,7 +124,7 @@ jobs:
 
           sha256sum "Assets/$file_name" > "Assets/${file_name}.sha256"
 
-            FILE_NAME="$file_name" python3 -c 'import json, os; from datetime import datetime; metadata={"target":os.environ["TARGET"],"releaseTag":os.environ["RELEASE_TAG"],"extraFlags":os.environ.get("EXTRA_FLAGS_INPUT", ""),"artifact":os.environ["FILE_NAME"],"commit":os.environ["GITHUB_SHA"],"runId":os.environ["GITHUB_RUN_ID"],"builtAtUtc":datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}; print(json.dumps(metadata, indent=2))' > Assets/echo-target-build-meta.json
+          FILE_NAME="$file_name" python3 -c 'import json, os; from datetime import datetime, UTC; metadata={"target":os.environ["TARGET"],"releaseTag":os.environ["RELEASE_TAG"],"extraFlags":os.environ.get("EXTRA_FLAGS_INPUT", ""),"artifact":os.environ["FILE_NAME"],"commit":os.environ["GITHUB_SHA"],"runId":os.environ["GITHUB_RUN_ID"],"builtAtUtc":datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}; print(json.dumps(metadata, indent=2))' > Assets/echo-target-build-meta.json
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

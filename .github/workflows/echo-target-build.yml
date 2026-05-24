@@ -72,14 +72,8 @@ jobs:
           fi
 
           target_upper=$(echo "$target_trimmed" | tr '[:lower:]' '[:upper:]')
-          target_list_cmd="targets-ci-board-print"
-          if ! make -s "$target_list_cmd" >/dev/null 2>&1; then
-            target_list_cmd="targets-ci-print"
-          fi
-
-          available_targets=$(make -s "$target_list_cmd")
-          if ! printf '%s\n' "$available_targets" | tr ' ' '\n' | grep -Fxq "$target_upper"; then
-            echo "Target '$target_upper' was not found in ${target_list_cmd}"
+          if ! make -n "$target_upper" >/dev/null 2>&1; then
+            echo "Target '$target_upper' is not buildable in this fork/branch"
             exit 1
           fi
 

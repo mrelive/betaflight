@@ -72,7 +72,7 @@ jobs:
           fi
 
           target_upper=$(echo "$target_trimmed" | tr '[:lower:]' '[:upper:]')
-          if ! make -n "$target_upper" >/dev/null 2>&1; then
+          if ! make -n TARGET="$target_upper" >/dev/null 2>&1; then
             echo "Target '$target_upper' is not buildable in this fork/branch"
             exit 1
           fi
@@ -93,7 +93,7 @@ jobs:
             extra_flags="${extra_flags} ${EXTRA_FLAGS_INPUT}"
           fi
 
-          make EXTRA_FLAGS="$extra_flags" "$TARGET"
+          make TARGET="$TARGET" EXTRA_FLAGS="$extra_flags"
 
       - name: Collect build artifacts
         id: collect

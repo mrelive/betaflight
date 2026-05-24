@@ -118,7 +118,7 @@ jobs:
 
           sha256sum "Assets/$file_name" > "Assets/${file_name}.sha256"
 
-          FILE_NAME="$file_name" python3 -c 'import json, os; from datetime import datetime, UTC; metadata={"target":os.environ["TARGET"],"releaseTag":os.environ["RELEASE_TAG"],"extraFlags":os.environ.get("EXTRA_FLAGS_INPUT", ""),"artifact":os.environ["FILE_NAME"],"commit":os.environ["GITHUB_SHA"],"runId":os.environ["GITHUB_RUN_ID"],"builtAtUtc":datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}; print(json.dumps(metadata, indent=2))' > Assets/echo-target-build-meta.json
+          FILE_NAME="$file_name" python3 -c 'import json, os; from datetime import datetime, timezone; metadata={"target":os.environ["TARGET"],"releaseTag":os.environ["RELEASE_TAG"],"extraFlags":os.environ.get("EXTRA_FLAGS_INPUT", ""),"artifact":os.environ["FILE_NAME"],"commit":os.environ["GITHUB_SHA"],"runId":os.environ["GITHUB_RUN_ID"],"builtAtUtc":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}; print(json.dumps(metadata, indent=2))' > Assets/echo-target-build-meta.json
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

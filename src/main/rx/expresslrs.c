@@ -194,13 +194,15 @@ static uint8_t mspBuffer[ELRS_MSP_BUFFER_SIZE];
 // Stick unpacking
 //
 
+DEFINE_SCALE_FN(scaleRangeLq, 0, 100, 988, 2011)
+
 static void setRssiChannelData(uint16_t *rcData)
 {
 #ifdef USE_ELRSV4
     // In ELRS V4, Arm (ch5) is copied to ch14 to mimic the behavior of the fullres modes which have it as an extra channel
     rcData[ELRS_ARM_V4_CHANNEL] = rcData[ELRS_ARM_V3_CHANNEL];
 #endif
-    rcData[ELRS_LQ_CHANNEL] = scaleRange(receiver.uplinkLQ, 0, 100, 988, 2011);
+    rcData[ELRS_LQ_CHANNEL] = scaleRangeLq(receiver.uplinkLQ);
     rcData[ELRS_RSSI_CHANNEL] = scaleRange(constrain(receiver.rssiFiltered, receiver.rfPerfParams->sensitivity, -50), receiver.rfPerfParams->sensitivity, -50, 988, 2011);
 }
 
@@ -513,8 +515,8 @@ static void updatePhaseLock(void)
         }
 
         expressLrsTimerDebug();
-        DEBUG_SET(DEBUG_RX_EXPRESSLRS_PHASELOCK, 0, pl.rawOffsetUs);
-        DEBUG_SET(DEBUG_RX_EXPRESSLRS_PHASELOCK, 1, pl.offsetUs);
+        DEBUG_SET(DEBUG_RX_EXPRESSLRS_PHASELOCK, 0, pl.rawOffsetUs);  //!< Raw Phase Offset [unit:us]
+        DEBUG_SET(DEBUG_RX_EXPRESSLRS_PHASELOCK, 1, pl.offsetUs);     //!< Filtered Phase Offset [unit:us]
     }
 
     phaseLockEprReset();
@@ -1211,10 +1213,10 @@ rx_spi_received_e expressLrsDataReceived(uint8_t *payloadBuffer)
     handleConfigUpdate(timeStampMs);
     handleLinkStatsUpdate(timeStampMs);
 
-    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 0, lostConnectionCounter);
-    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 1, receiver.rssiFiltered);
-    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 2, receiver.snr / 4);
-    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 3, receiver.uplinkLQ);
+    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 0, lostConnectionCounter);  //!< Lost Connection Count
+    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 1, receiver.rssiFiltered);  //!< Filtered RSSI [unit:dBm]
+    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 2, receiver.snr / 4);       //!< SNR [unit:dB]
+    DEBUG_SET(DEBUG_RX_EXPRESSLRS_SPI, 3, receiver.uplinkLQ);      //!< Uplink Link Quality [unit:%]
 
     receiver.inBindingMode ? rxSpiLedBlinkBind() : rxSpiLedBlinkRxLoss(rfPacketStatus);
 

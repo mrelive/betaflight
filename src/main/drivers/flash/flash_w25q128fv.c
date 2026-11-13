@@ -48,6 +48,9 @@
 #define JEDEC_ID_WINBOND_W25Q16JV_SPI           0xEF4015
 #define JEDEC_ID_WINBOND_W25Q16JV_DTR_SPI       0xEF7015
 #define JEDEC_ID_BOYAMICRO_BY25Q128ES_SPI       0x684018
+#define JEDEC_ID_FMSH_FM25Q64A_SPI              0xA14017
+#define JEDEC_ID_FMSH_FM25Q128A_SPI             0xA14018
+#define JEDEC_ID_FMSH_FM25Q256_SPI              0xA14019
 
 // Device size parameters
 #define W25Q128FV_PAGE_SIZE         2048
@@ -220,7 +223,7 @@ static MMFLASH_CODE bool w25q128fv_isReady(flashDevice_t *fdevice)
     return !busy;
 }
 
-#if !defined(USE_QUADSPI)
+#if !defined(QUADSPI_TRAIT_SEQUENCE)
 MMFLASH_CODE static bool w25q128fv_isWritable(flashDevice_t *fdevice)
 {
     uint8_t status = w25q128fv_readRegister(&fdevice->io, W25Q128FV_INSTRUCTION_READ_STATUS1_REG);
@@ -268,14 +271,29 @@ static void w25q128fv_deviceInit(flashDevice_t *flashdev);
 MMFLASH_CODE_NOINLINE bool w25q128fv_identify(flashDevice_t *fdevice, uint32_t jedecID)
 {
     switch (jedecID) {
+    case JEDEC_ID_FMSH_FM25Q64A_SPI:
+        fdevice->geometry.sectors           = 128;
+        fdevice->geometry.pagesPerSector    = 256;
+        fdevice->geometry.pageSize          = 256;
+        // = 8388608 64MBit 8MB
+        break;
+
     case JEDEC_ID_WINBOND_W25Q128FV_SPI:
     case JEDEC_ID_WINBOND_W25Q128FV_QUADSPI:
     case JEDEC_ID_WINBOND_W25Q128JV_QUADSPI:
     case JEDEC_ID_BOYAMICRO_BY25Q128ES_SPI:
+    case JEDEC_ID_FMSH_FM25Q128A_SPI:  
         fdevice->geometry.sectors           = 256;
         fdevice->geometry.pagesPerSector    = 256;
         fdevice->geometry.pageSize          = 256;
         // = 16777216 128MBit 16MB
+        break;
+
+    case JEDEC_ID_FMSH_FM25Q256_SPI:
+        fdevice->geometry.sectors           = 512;
+        fdevice->geometry.pagesPerSector    = 256;
+        fdevice->geometry.pageSize          = 256;
+        // = 33554432 256MBit 32MB
         break;
 
     case JEDEC_ID_WINBOND_W25Q16JV_DTR_SPI:
@@ -337,16 +355,25 @@ static void w25q128fv_eraseCompletely(flashDevice_t *fdevice)
     w25q128fv_setTimeout(fdevice, W25Q128FV_TIMEOUT_CHIP_ERASE_MS);
 }
 
-#if defined(USE_OCTOSPI)
+#if !defined(QUADSPI_TRAIT_SEQUENCE)
 MMFLASH_CODE static void w25q128fv_loadProgramData(flashDevice_t *fdevice, const uint8_t *data, int length)
 {
     w25q128fv_waitForReady(fdevice);
 
+#if defined(USE_QUADSPI)
+    extDevice_t *dev = fdevice->io.handle.dev;
+#ifdef USE_FLASH_WRITES_USING_4LINES
+    quadSpiTransmitWithAddress4LINES(dev, W25Q128FV_INSTRUCTION_QUAD_PAGE_PROGRAM, 0, fdevice->currentWriteAddress, W25Q128FV_ADDRESS_BITS, data, length);
+#else
+    quadSpiTransmitWithAddress1LINE(dev, W25Q128FV_INSTRUCTION_PAGE_PROGRAM, 0, fdevice->currentWriteAddress, W25Q128FV_ADDRESS_BITS, data, length);
+#endif
+#elif defined(USE_OCTOSPI)
     octoSpiResource_t *octoSpi = fdevice->io.handle.octoSpi;
 #ifdef USE_FLASH_WRITES_USING_4LINES
     octoSpiTransmitWithAddress4LINES(octoSpi, W25Q128FV_INSTRUCTION_QUAD_PAGE_PROGRAM, 0, fdevice->currentWriteAddress, W25Q128FV_ADDRESS_BITS, data, length);
 #else
     octoSpiTransmitWithAddress1LINE(octoSpi, W25Q128FV_INSTRUCTION_PAGE_PROGRAM, 0, fdevice->currentWriteAddress, W25Q128FV_ADDRESS_BITS, data, length);
+#endif
 #endif
 
     w25q128fv_setTimeout(fdevice, W25Q128FV_TIMEOUT_PAGE_PROGRAM_MS);
@@ -361,7 +388,7 @@ MMFLASH_CODE static void w25q128fv_pageProgramBegin(flashDevice_t *fdevice, uint
     fdevice->currentWriteAddress = address;
 }
 
-#if defined(USE_QUADSPI)
+#if defined(QUADSPI_TRAIT_SEQUENCE)
 // Called in ISR context
 static busStatus_e w25q128fv_callbackReady(uintptr_t arg)
 {
@@ -405,7 +432,7 @@ enum {READ_STATUS, WRITE_ENABLE, PAGE_PROGRAM, DATA1, DATA2};
 
 MMFLASH_CODE static uint32_t w25q128fv_pageProgramContinue(flashDevice_t *fdevice, uint8_t const **buffers, const uint32_t *bufferSizes, uint32_t bufferCount)
 {
-#if defined(USE_QUADSPI)
+#if defined(QUADSPI_TRAIT_SEQUENCE)
     if (bufferCount == 0) {
         if (fdevice->callback) fdevice->callback(0);
         return 0;
@@ -490,7 +517,7 @@ MMFLASH_CODE static uint32_t w25q128fv_pageProgramContinue(flashDevice_t *fdevic
         bool writable = false;
         do {
             writable = w25q128fv_isWritable(fdevice);
-        } while (!writable && w25q128fv_hasTimedOut(fdevice));
+        } while (!writable && !w25q128fv_hasTimedOut(fdevice));
         if (!writable) {
             return 0;
         }

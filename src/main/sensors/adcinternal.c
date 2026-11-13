@@ -32,6 +32,11 @@
 #include "common/utils.h"
 
 #include "drivers/adc.h"
+#include "drivers/time.h"
+
+/* ADC or DMA configuration may leave internal channels unavailable.  The
+ * scheduler can retry later, but startup must not wait forever for them. */
+#define ADC_INTERNAL_INIT_TIMEOUT_US 10000u
 
 typedef struct movingAverageStateUint16_s {
     uint32_t sum;
@@ -92,20 +97,23 @@ void adcInternalProcess(timeUs_t currentTimeUs)
     vrefMv = adcInternalCompensateVref(adcVrefintValue);
     coreTemperature = adcInternalComputeTemperature(adcTempsensorValue, vrefMv);
 
-    DEBUG_SET(DEBUG_ADC_INTERNAL, 0, coreTemperature);
-    DEBUG_SET(DEBUG_ADC_INTERNAL, 1, vrefintSample);
-    DEBUG_SET(DEBUG_ADC_INTERNAL, 2, tempsensorSample);
-    DEBUG_SET(DEBUG_ADC_INTERNAL, 3, vrefMv);
+    DEBUG_SET(DEBUG_ADC_INTERNAL, 0, coreTemperature);   //!< Core Temperature [unit:degC]
+    DEBUG_SET(DEBUG_ADC_INTERNAL, 1, vrefintSample);     //!< VRefInt Sample
+    DEBUG_SET(DEBUG_ADC_INTERNAL, 2, tempsensorSample);  //!< Temperature Sensor Sample
+    DEBUG_SET(DEBUG_ADC_INTERNAL, 3, vrefMv);            //!< VRef [unit:0.001V]
 
     adcInternalStartConversion(); // Start next conversion
 }
 
 void adcInternalInit(void)
 {
+    const timeUs_t startedAt = micros();
     // Call adcInternalProcess repeatedly to fill moving average array
     for (int i = 0 ; i < 9 ; i++) {
         while (adcInternalIsBusy()) {
-            // empty
+            if ((timeUs_t)(micros() - startedAt) >= ADC_INTERNAL_INIT_TIMEOUT_US) {
+                return;
+            }
         }
         adcInternalProcess(0);
     }

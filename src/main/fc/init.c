@@ -98,7 +98,7 @@
 #include "flight/alt_hold.h"
 #include "flight/autopilot.h"
 #include "flight/failsafe.h"
-#if ENABLE_FLIGHT_PLAN && !defined(USE_WING)
+#if ENABLE_FLIGHT_PLAN
 #include "flight/flight_plan_nav.h"
 #endif
 #include "flight/imu.h"
@@ -277,9 +277,11 @@ static void configureCANBusses(void)
 {
     canPinConfigure(canPinConfig(0));
     const uint32_t bitrate = (uint32_t)canConfig()->bitrate_khz * 1000U;
-    canInit(CANDEV_1, bitrate);
-    canInit(CANDEV_2, bitrate);
-    canInit(CANDEV_3, bitrate);
+    // Try every CAN device the platform advertises.  canInit() returns
+    // false for absent / unconfigured devices; that is harmless.
+    for (int dev = 0; dev < CANDEV_COUNT; dev++) {
+        canInit((canDevice_e)dev, bitrate);
+    }
 }
 #endif
 
@@ -414,7 +416,7 @@ void initPhase1(void)
 #endif
 
     if (!readSuccess || !isEEPROMVersionValid() || strncasecmp(systemConfig()->boardIdentifier, TARGET_BOARD_IDENTIFIER, sizeof(TARGET_BOARD_IDENTIFIER))) {
-        resetEEPROM();
+        resetEEPROMOnLoadFault();
     }
 
     systemState |= SYSTEM_STATE_CONFIG_LOADED;
@@ -464,7 +466,7 @@ void initPhase2(void)
             bothButtonsHeld = buttonAPressed() && buttonBPressed();
             if (bothButtonsHeld) {
                 if (--secondsRemaining == 0) {
-                    resetEEPROM();
+                    resetEEPROM(CONFIG_RESET_BUTTON, 0);
 #ifdef USE_PERSISTENT_OBJECTS
                     persistentObjectWrite(PERSISTENT_OBJECT_RESET_REASON, RESET_NONE);
 #endif
@@ -545,7 +547,7 @@ void initPhase2(void)
     busSwitchInit();
 #endif
 
-#if defined(USE_UART)
+#if defined(USE_UART) && SERIAL_TRAIT_PIN_CONFIG
     uartPinConfigure(serialPinConfig());
 #endif
 
@@ -773,7 +775,11 @@ void initPhase3(void)
         LED0_TOGGLE;
 #if defined(USE_BEEPER)
         delay(25);
-        if (!(beeperConfig()->beeper_off_flags & BEEPER_GET_FLAG(BEEPER_SYSTEM_INIT))) {
+        // This boot beep bypasses beeper()/beeperUsbSuppressed(), so honour BEEPER_USB
+        // here directly. MSP is not up yet, but usbCableIsInserted() is already valid.
+        const bool usbSuppressed = (beeperConfig()->beeper_off_flags & BEEPER_GET_FLAG(BEEPER_USB))
+            && usbCableIsInserted();
+        if (!(beeperConfig()->beeper_off_flags & BEEPER_GET_FLAG(BEEPER_SYSTEM_INIT)) && !usbSuppressed) {
             BEEP_ON;
         }
         delay(25);
@@ -866,7 +872,7 @@ void initPhase3(void)
 
     positionInit();
     autopilotInit();
-#if ENABLE_FLIGHT_PLAN && !defined(USE_WING)
+#if ENABLE_FLIGHT_PLAN
     flightPlanNavInit();
 #endif
 

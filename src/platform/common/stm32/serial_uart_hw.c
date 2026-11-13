@@ -70,6 +70,19 @@ static void enableRxIrq(const uartHardware_t *hardware)
 #elif defined(APM32F4)
         DAL_NVIC_SetPriority(hardware->irqn, NVIC_PRIORITY_BASE(hardware->rxPriority), NVIC_PRIORITY_SUB(hardware->rxPriority));
         DAL_NVIC_EnableIRQ(hardware->irqn);
+#elif defined(X32M7)
+        NVIC_InitType nvicInit = {
+            .NVIC_IRQChannel = hardware->irqn,
+            .NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(hardware->rxPriority),
+            .NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(hardware->rxPriority),
+            .NVIC_IRQChannelCmd = ENABLE,
+        };
+        NVIC_Init(&nvicInit);
+#elif defined(USE_GDBSP_DRIVER)
+        nvic_irq_enable(hardware->irqn, NVIC_PRIORITY_BASE(hardware->rxPriority), NVIC_PRIORITY_SUB(hardware->rxPriority));
+#elif defined(CH32H4)
+        NVIC_SetPriority(hardware->irqn, hardware->rxPriority);
+        NVIC_EnableIRQ(hardware->irqn);
 #else
 # error "Unhandled MCU type"
 #endif
@@ -100,6 +113,9 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
 
 #ifdef USE_DMA
     uartConfigureDma(uartdev);
+#if UART_TRAIT_TX_COMPLETE_PENDING
+    s->txCompletePending = false;
+#endif
     s->txDMAEmpty = true;
 #endif
 
@@ -128,7 +144,7 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
         const bool pushPull = serialOptions_pushPull(options);
         // pull direction
         const serialPullMode_t pull = serialOptions_pull(options);
-#if defined(STM32F7) || defined(STM32H5) || defined(STM32C5) || defined(STM32H7) || defined(STM32G4) || defined(STM32N6) || defined(APM32F4)
+#if defined(STM32F7) || defined(STM32H5) || defined(STM32C5) || defined(STM32H7) || defined(STM32G4) || defined(STM32N6) || defined(APM32F4) || defined(X32M7)
         // Note: APM32F4 is different from STM32F4 here
         const ioConfig_t ioCfg = IO_CONFIG(
             pushPull ? GPIO_MODE_AF_PP : GPIO_MODE_AF_OD,
@@ -150,6 +166,31 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
             GPIO_Low_Speed,  // TODO: should use stronger drive
             pushPull ? GPIO_OType_PP : GPIO_OType_OD,
             ((const unsigned[]){GPIO_PuPd_NOPULL, GPIO_PuPd_DOWN, GPIO_PuPd_UP})[pull]
+        );
+#elif defined(GD32F4)
+        const ioConfig_t ioCfg = IO_CONFIG(
+            GPIO_MODE_AF,
+            GPIO_OSPEED_2MHZ,
+            pushPull ? GPIO_OTYPE_PP : GPIO_OTYPE_OD,
+            ((const unsigned[]){GPIO_PUPD_NONE, GPIO_PUPD_PULLDOWN, GPIO_PUPD_PULLUP})[pull]
+        );
+#elif defined(GD32H7)
+        const ioConfig_t ioCfg = IO_CONFIG(
+            GPIO_MODE_AF,
+            GPIO_OSPEED_12MHZ,
+            pushPull ? GPIO_OTYPE_PP : GPIO_OTYPE_OD,
+            ((const unsigned[]){GPIO_PUPD_NONE, GPIO_PUPD_PULLDOWN, GPIO_PUPD_PULLUP})[pull]
+        );
+#elif defined(CH32H4)
+        // CH32H41x GPIO disconnects internal pull-up/pull-down resistors in all
+        // output and alternate-function modes (RM 9.2.7-9.2.8); external bias is
+        // required for single-wire/open-drain lines when SERIAL_BIDIR_NOPULL is not set.
+        UNUSED(pull);
+        const ioConfig_t ioCfg = IO_CONFIG(
+            DIR_OUT,
+            pushPull ? GPIO_MODE_OUT_AF_PP : GPIO_MODE_OUT_AF_OD,
+            GPIO_SPEED_VERY_HIGH,
+            GPIO_PULL_NONE
         );
 #endif
         IOInit(txIO, ownerTxRx, ownerIndex);
@@ -242,6 +283,7 @@ void uartConfigureDma(uartDevice_t *uartdev)
         }
     }
 
+#if !defined(USE_CHBSP_DRIVER)
     if (cfg->rxDmaopt != DMA_OPT_UNUSED) {
         dmaChannelSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_UART_RX, uartDeviceIdx, cfg->rxDmaopt);
         if (dmaChannelSpec) {
@@ -253,6 +295,7 @@ void uartConfigureDma(uartDevice_t *uartdev)
 #endif
         }
     }
+#endif
 #else /* USE_DMA_SPEC */
     // Non USE_DMA_SPEC does not support configurable ON/OFF of UART DMA
 
@@ -284,6 +327,8 @@ void uartConfigureDma(uartDevice_t *uartdev)
 #endif
             dmaSetHandler(identifier, uartDmaIrqHandler, hardware->txPriority, (uint32_t)uartdev);
             uartPort->txDMAPeripheralBaseAddr = (uint32_t)&UART_REG_TXD(hardware->reg);
+        } else {
+            uartPort->txDMAResource = NULL;
         }
     }
 
@@ -295,6 +340,8 @@ void uartConfigureDma(uartDevice_t *uartdev)
             dmaMuxEnable(identifier, uartPort->rxDMAMuxId);
 #endif
             uartPort->rxDMAPeripheralBaseAddr = (uint32_t)&UART_REG_RXD(hardware->reg);
+        } else {
+            uartPort->rxDMAResource = NULL;
         }
     }
 }
@@ -306,6 +353,10 @@ void uartEnableTxInterrupt(uartPort_t *uartPort)
     LL_USART_EnableIT_TXE((USART_TypeDef *)uartPort->USARTx);
 #elif defined(USE_ATBSP_DRIVER)
     usart_interrupt_enable((usart_type *)uartPort->USARTx, USART_TDBE_INT, TRUE);
+#elif defined(X32M7)
+    USART_ConfigInt((USART_TypeDef *)uartPort->USARTx, USART_INT_TXDE, ENABLE);
+#elif defined(USE_GDBSP_DRIVER)
+    usart_interrupt_enable((uint32_t)uartPort->USARTx, USART_INT_TBE);
 #else
     USART_ITConfig((USART_TypeDef *)uartPort->USARTx, USART_IT_TXE, ENABLE);
 #endif

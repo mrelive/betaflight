@@ -83,6 +83,8 @@ typedef enum {
     BOXBEEPERMUTE,
     BOXREADY,
     BOXLAPTIMERRESET,
+    BOXWPCAPTURE,
+    BOXLAUNCH,
     CHECKBOX_ITEM_COUNT
 } boxId_e;
 
@@ -96,11 +98,14 @@ typedef struct boxBitmask_s { uint32_t bits[(CHECKBOX_ITEM_COUNT + 31) / 32]; } 
 
 #define MAX_MODE_ACTIVATION_CONDITION_COUNT 20
 
+#define STICKY_MODE_BOOT_DELAY_US (5 * 1000 * 1000)
+
 #define CHANNEL_RANGE_MIN 900
 #define CHANNEL_RANGE_MAX 2100
 
 #define MODE_STEP_TO_CHANNEL_VALUE(step) (CHANNEL_RANGE_MIN + 25 * step)
 #define CHANNEL_VALUE_TO_STEP(channelValue) ((constrain(channelValue, CHANNEL_RANGE_MIN, CHANNEL_RANGE_MAX) - CHANNEL_RANGE_MIN) / 25)
+#define MODE_STEP_TO_NORM(step) rcUsToNorm(MODE_STEP_TO_CHANNEL_VALUE(step))
 
 #define MIN_MODE_RANGE_STEP 0
 #define MAX_MODE_RANGE_STEP ((CHANNEL_RANGE_MAX - CHANNEL_RANGE_MIN) / 25)
@@ -144,6 +149,18 @@ typedef struct modeActivationProfile_s {
 
 bool IS_RC_MODE_ACTIVE(boxId_e boxId);
 void rcModeUpdate(const boxBitmask_t *newState);
+
+// External (MAVLink command) flight-mode override. Forces the selected box modes
+// active on top of the RC-derived mask each loop, so a MAVLink DO_SET_MODE / RTL
+// survives the per-loop recompute in updateActivatedModes(). Overrides are
+// cleared on disarm. No effect when ENABLE_TELEMETRY_MAVLINK_COMMANDS is off.
+#if ENABLE_TELEMETRY_MAVLINK_COMMANDS
+void rcModeSetExternalOverride(boxId_e boxId, bool enabled);
+void rcModeClearExternalOverrides(void);
+#else
+static inline void rcModeSetExternalOverride(boxId_e boxId, bool enabled) { (void)boxId; (void)enabled; }
+static inline void rcModeClearExternalOverrides(void) { }
+#endif
 
 bool isAirmodeEnabled(void);
 

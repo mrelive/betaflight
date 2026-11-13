@@ -102,6 +102,26 @@ UART_BUFFERS(9);
 UART_BUFFERS(10);
 #endif
 
+#ifdef USE_UART11
+UART_BUFFERS(11);
+#endif
+
+#ifdef USE_UART12
+UART_BUFFERS(12);
+#endif
+
+#ifdef USE_UART13
+UART_BUFFERS(13);
+#endif
+
+#ifdef USE_UART14
+UART_BUFFERS(14);
+#endif
+
+#ifdef USE_UART15
+UART_BUFFERS(15);
+#endif
+
 #ifdef USE_LPUART1
 UART_BUFFERS(Lp1);  // TODO - maybe some other naming scheme ?
 #endif
@@ -200,6 +220,21 @@ uartDeviceIdx_e uartDeviceIdxFromIdentifier(serialPortIdentifier_e identifier)
 #ifdef USE_UART10
         _R(SERIAL_PORT_USART10, UARTDEV_10),
 #endif
+#ifdef USE_UART11
+        _R(SERIAL_PORT_UART11, UARTDEV_11),
+#endif
+#ifdef USE_UART12
+        _R(SERIAL_PORT_UART12, UARTDEV_12),
+#endif
+#ifdef USE_UART13
+        _R(SERIAL_PORT_UART13, UARTDEV_13),
+#endif
+#ifdef USE_UART14
+        _R(SERIAL_PORT_UART14, UARTDEV_14),
+#endif
+#ifdef USE_UART15
+        _R(SERIAL_PORT_UART15, UARTDEV_15),
+#endif
     };
 #undef _R
     if (identifier >= 0 && identifier < (int)ARRAYLEN(uartMap)) {
@@ -221,6 +256,11 @@ uartDeviceIdx_e uartDeviceIdxFromIdentifier(serialPortIdentifier_e identifier)
 #endif
     // neither LPUART nor UART
     return UARTDEV_INVALID;
+}
+
+int uartDeviceIndexFromIdentifier(serialPortIdentifier_e identifier)
+{
+    return (int)uartDeviceIdxFromIdentifier(identifier);
 }
 
 #if SERIAL_PIOUART_COUNT > 0
@@ -252,14 +292,41 @@ uartDevice_t *uartDeviceFromIdentifier(serialPortIdentifier_e identifier)
     return deviceIdx != UARTDEV_INVALID ? &uartDevice[deviceIdx] : NULL;
 }
 
+static portMode_e uartSanitizeMode(const uartDevice_t *uartDevice, portMode_e mode, portOptions_e options)
+{
+    if (!uartDevice->tx.pin) {
+        mode &= ~MODE_TX;
+    }
+
+    if (!uartDevice->rx.pin && !((options & SERIAL_BIDIR) && uartDevice->tx.pin)) {
+        mode &= ~MODE_RX;
+    }
+
+    return mode;
+}
+
+static bool uartCanWrite(const uartPort_t *uartPort)
+{
+    const uartDevice_t *uartDevice = container_of(uartPort, uartDevice_t, port);
+    return (uartPort->port.mode & MODE_TX) && uartDevice->tx.pin;
+}
+
 serialPort_t *uartOpen(serialPortIdentifier_e identifier, serialReceiveCallbackPtr rxCallback, void *rxCallbackData, uint32_t baudRate, portMode_e mode, portOptions_e options)
 {
     uartDevice_t *uartDevice = uartDeviceFromIdentifier(identifier);
     if (!uartDevice) {
         return NULL;
     }
+    // A UART can be compiled in (USE_UARTx) yet have no usable pins for the
+    // configured port - e.g. a config assigns a pin that is missing from the
+    // hardware table. uartPinConfigure() then leaves ->hardware NULL, and
+    // serialUART() would dereference it and hard fault. Bail out cleanly.
+    if (!uartDevice->hardware) {
+        return NULL;
+    }
     // fill identifier early, so initialization code can use it
     uartDevice->port.port.identifier = identifier;
+    mode = uartSanitizeMode(uartDevice, mode, options);
 
     uartPort_t *uartPort = serialUART(uartDevice, baudRate, mode, options);
     if (!uartPort) {
@@ -284,6 +351,8 @@ serialPort_t *uartOpen(serialPortIdentifier_e identifier, serialReceiveCallbackP
 static void uartSetBaudRate(serialPort_t *instance, uint32_t baudRate)
 {
     uartPort_t *uartPort = (uartPort_t *)instance;
+    uartDevice_t *uartDevice = container_of(uartPort, uartDevice_t, port);
+    uartPort->port.mode = uartSanitizeMode(uartDevice, uartPort->port.mode, uartPort->port.options);
     uartPort->port.baudRate = baudRate;
     uartReconfigure(uartPort);
 }
@@ -291,7 +360,8 @@ static void uartSetBaudRate(serialPort_t *instance, uint32_t baudRate)
 static void uartSetMode(serialPort_t *instance, portMode_e mode)
 {
     uartPort_t *uartPort = (uartPort_t *)instance;
-    uartPort->port.mode = mode;
+    uartDevice_t *uartDevice = container_of(uartPort, uartDevice_t, port);
+    uartPort->port.mode = uartSanitizeMode(uartDevice, mode, uartPort->port.options);
     uartReconfigure(uartPort);
 }
 
@@ -313,10 +383,14 @@ static uint32_t uartTotalRxBytesWaiting(const serialPort_t *instance)
     }
 #endif
 
-    if (uartPort->port.rxBufferHead >= uartPort->port.rxBufferTail) {
-        return uartPort->port.rxBufferHead - uartPort->port.rxBufferTail;
+    // The Rx ISR advances the head; read it once so a wrap between reads cannot underflow the result
+    const uint32_t rxBufferHead = uartPort->port.rxBufferHead;
+    const uint32_t rxBufferTail = uartPort->port.rxBufferTail;
+
+    if (rxBufferHead >= rxBufferTail) {
+        return rxBufferHead - rxBufferTail;
     } else {
-        return uartPort->port.rxBufferSize + uartPort->port.rxBufferHead - uartPort->port.rxBufferTail;
+        return uartPort->port.rxBufferSize + rxBufferHead - rxBufferTail;
     }
 }
 
@@ -324,12 +398,28 @@ static uint32_t uartTotalTxBytesFree(const serialPort_t *instance)
 {
     const uartPort_t *uartPort = (const uartPort_t*)instance;
 
+    uint32_t txBufferHead;
+    uint32_t txBufferTail;
     uint32_t bytesUsed;
+#ifdef USE_DMA
+    uint32_t dmaRemaining = 0;
+#endif
 
-    if (uartPort->port.txBufferHead >= uartPort->port.txBufferTail) {
-        bytesUsed = uartPort->port.txBufferHead - uartPort->port.txBufferTail;
+    // The Tx ISR moves the tail whenever it starts a transfer; retry until the tail did not move during the sample
+    do {
+        txBufferTail = uartPort->port.txBufferTail;
+        txBufferHead = uartPort->port.txBufferHead;
+#ifdef USE_DMA
+        if (uartPort->txDMAResource) {
+            dmaRemaining = dmaGetDataLength(uartPort->txDMAResource);
+        }
+#endif
+    } while (txBufferTail != uartPort->port.txBufferTail);
+
+    if (txBufferHead >= txBufferTail) {
+        bytesUsed = txBufferHead - txBufferTail;
     } else {
-        bytesUsed = uartPort->port.txBufferSize + uartPort->port.txBufferHead - uartPort->port.txBufferTail;
+        bytesUsed = uartPort->port.txBufferSize + txBufferHead - txBufferTail;
     }
 
 #ifdef USE_DMA
@@ -338,7 +428,7 @@ static uint32_t uartTotalTxBytesFree(const serialPort_t *instance)
          * When we queue up a DMA request, we advance the Tx buffer tail before the transfer finishes, so we must add
          * the remaining size of that in-progress transfer here instead:
          */
-        bytesUsed += dmaGetDataLength(uartPort->txDMAResource);
+        bytesUsed += dmaRemaining;
 
         /*
          * If the Tx buffer is being written to very quickly, we might have advanced the head into the buffer
@@ -398,6 +488,10 @@ static void uartWrite(serialPort_t *instance, uint8_t ch)
 {
     uartPort_t *uartPort = (uartPort_t *)instance;
 
+    if (!uartCanWrite(uartPort)) {
+        return;
+    }
+
     // Check if the TX line is being pulled low by an unpowered peripheral
     if (uartPort->checkUsartTxOutput && !uartPort->checkUsartTxOutput(uartPort)) {
         // TX line is being pulled low, so don't transmit
@@ -426,6 +520,10 @@ static void uartBeginWrite(serialPort_t *instance)
 {
     uartPort_t *uartPort = (uartPort_t *)instance;
 
+    if (!uartCanWrite(uartPort)) {
+        return;
+    }
+
     // Check if the TX line is being pulled low by an unpowered peripheral
     if (uartPort->checkUsartTxOutput) {
         uartPort->checkUsartTxOutput(uartPort);
@@ -437,6 +535,10 @@ static void uartWriteBuf(serialPort_t *instance, const void *data, int count)
     uartPort_t *uartPort = (uartPort_t *)instance;
     uartDevice_t *uart = container_of(uartPort, uartDevice_t, port);
     const uint8_t *bytePtr = (const uint8_t*)data;
+
+    if (!uartCanWrite(uartPort)) {
+        return;
+    }
 
     // Test if checkUsartTxOutput() detected TX line being pulled low by an unpowered peripheral
     if (uart->txPinState == TX_PIN_MONITOR) {
@@ -465,6 +567,10 @@ static void uartEndWrite(serialPort_t *instance)
     uartPort_t *uartPort = (uartPort_t *)instance;
     uartDevice_t *uart = container_of(uartPort, uartDevice_t, port);
 
+    if (!uartCanWrite(uartPort)) {
+        return;
+    }
+
     // Check if the TX line is being pulled low by an unpowered peripheral
     if (uart->txPinState == TX_PIN_MONITOR) {
         // TX line is being pulled low, so don't transmit
@@ -490,6 +596,9 @@ const struct serialPortVTable uartVTable[] = {
         .serialSetBaudRate = uartSetBaudRate,
         .isSerialTransmitBufferEmpty = isUartTransmitBufferEmpty,
         .setMode = uartSetMode,
+#ifdef USE_PLATFORM_UART_IDLE_CALLBACK
+        .setIdleCallback = uartSetIdleCallback,
+#endif
         .setCtrlLineStateCb = NULL,
         .setBaudRateCb = NULL,
         .writeBuf = uartWriteBuf,
@@ -498,6 +607,18 @@ const struct serialPortVTable uartVTable[] = {
     }
 };
 
+#ifndef USE_PLATFORM_UART_IRQ_HANDLERS
+#ifdef USE_GDBSP_DRIVER
+// GDBSP driver uses IRQ handlers with different naming scheme
+#define UART_IRQHandler(type, number, dev)                      \
+    FAST_IRQ_HANDLER void CONCAT(                              \
+        _UART_GET_PREFIX(dev),                                  \
+        number ## _IRQHandler)(void)                            \
+    {                                                           \
+        uartPort_t *uartPort = &(uartDevice[(dev)].port);       \
+        uartIrqHandler(uartPort);                               \
+    }
+#else
 #define UART_IRQHandler(type, number, dev)                      \
     FAST_IRQ_HANDLER void type ## number ## _IRQHandler(void)   \
     {                                                           \
@@ -505,6 +626,11 @@ const struct serialPortVTable uartVTable[] = {
         uartIrqHandler(uartPort);                               \
     }                                                           \
 /**/
+#endif
+
+#ifdef USE_UART0
+UART_IRQHandler(USART, 0, UARTDEV_0) // USART0 Rx/Tx IRQ Handler
+#endif
 
 #ifdef USE_UART1
 UART_IRQHandler(USART, 1, UARTDEV_1) // USART1 Rx/Tx IRQ Handler
@@ -546,8 +672,29 @@ UART_IRQHandler(UART, 9, UARTDEV_9)  // UART9 Rx/Tx IRQ Handler
 UART_IRQHandler(USART, 10, UARTDEV_10) // UART10 Rx/Tx IRQ Handler
 #endif
 
+#ifdef USE_UART11
+UART_IRQHandler(UART, 11, UARTDEV_11) // UART11 Rx/Tx IRQ Handler
+#endif
+
+#ifdef USE_UART12
+UART_IRQHandler(UART, 12, UARTDEV_12) // UART12 Rx/Tx IRQ Handler
+#endif
+
+#ifdef USE_UART13
+UART_IRQHandler(UART, 13, UARTDEV_13) // UART13 Rx/Tx IRQ Handler
+#endif
+
+#ifdef USE_UART14
+UART_IRQHandler(UART, 14, UARTDEV_14) // UART14 Rx/Tx IRQ Handler
+#endif
+
+#ifdef USE_UART15
+UART_IRQHandler(UART, 15, UARTDEV_15) // UART15 Rx/Tx IRQ Handler
+#endif
+
 #ifdef USE_LPUART1
 UART_IRQHandler(LPUART, 1, UARTDEV_LP1) // LPUART1 Rx/Tx IRQ Handler
 #endif
+#endif // !USE_PLATFORM_UART_IRQ_HANDLERS
 
 #endif // USE_UART

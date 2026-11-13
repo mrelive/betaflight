@@ -49,13 +49,18 @@
 #define YAW_SPIN_RECOVERY_THRESHOLD_MAX 1950
 #endif
 
+#define GYRO_CALIB_DURATION_MIN 50
+#define GYRO_CALIB_DURATION_MAX 3000
+#define GYRO_CALIB_NOISE_LIMIT_MAX 200
+#define GYRO_OFFSET_YAW_MAX 1000
+
 #define GYRO_IMU_DOWNSAMPLE_CUTOFF_HZ 200
 
 #define GYRO_MASK(x) BIT(x)
 
 typedef union gyroLowpassFilter_u {
     pt1Filter_t pt1FilterState;
-    biquadFilter_t biquadFilterState;
+    svfLowpassFilter_t svfLowpassFilterState;
     pt2Filter_t pt2FilterState;
     pt3Filter_t pt3FilterState;
 } gyroLowpassFilter_t;
@@ -96,10 +101,10 @@ typedef struct gyro_s {
 
     // notch filters
     filterApplyFnPtr notchFilter1ApplyFn;
-    biquadFilter_t notchFilter1[XYZ_AXIS_COUNT];
+    svfNotchFilter_t notchFilter1[XYZ_AXIS_COUNT];
 
     filterApplyFnPtr notchFilter2ApplyFn;
-    biquadFilter_t notchFilter2[XYZ_AXIS_COUNT];
+    svfNotchFilter_t notchFilter2[XYZ_AXIS_COUNT];
 
     uint16_t accSampleRateHz;
     uint8_t gyroEnabledBitmask;
@@ -133,7 +138,7 @@ enum {
 enum {
     DYN_LPF_NONE = 0,
     DYN_LPF_PT1,
-    DYN_LPF_BIQUAD,
+    DYN_LPF_SVF,
     DYN_LPF_PT2,
     DYN_LPF_PT3,
 };

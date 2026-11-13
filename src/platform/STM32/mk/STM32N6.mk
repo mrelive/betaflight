@@ -46,6 +46,7 @@ STDPERIPH_SRC   = \
             stm32n6xx_hal_tim_ex.c \
             stm32n6xx_hal_uart.c \
             stm32n6xx_hal_uart_ex.c \
+            stm32n6xx_hal_xspi.c \
             stm32n6xx_ll_dma.c \
             stm32n6xx_ll_exti.c \
             stm32n6xx_ll_i2c.c \
@@ -131,12 +132,16 @@ DEVICE_FLAGS       += -DN6_XIP_BUILD
 # into AXISRAM. Drop LTO for XIP only — clock funcs run from RAM,
 # instruction fetches survive the AXI clock transition during
 # HAL_RCC_OscConfig's HSI-park dance. Size cost is ~5-10% .text.
-OPTIMISATION_BASE   := -ffast-math -fmerge-all-constants
+LTO                 := no
 else ifeq ($(RAM_ONLY),1)
 DEFAULT_LD_SCRIPT   = $(LINKER_DIR)/STM32N657XX_RAM.ld
 DEVICE_FLAGS       += -DN6_RAM_ONLY_BUILD
 else
 DEFAULT_LD_SCRIPT   = $(LINKER_DIR)/STM32N657XX_LRUN.ld
+# LRUN has outgrown Thumb-2 PC-relative literal pool reach: with everything merged into
+# one LTO unit the assembler fails with "offset out of range". Size cost is ~7% .text,
+# which LRUN has room for. FSBL_FULL does not, so it keeps LTO.
+LTO                 := no
 endif
 STARTUP_SRC         = STM32/startup/startup_stm32n657xx.s
 MCU_FLASH_SIZE     := 2048
@@ -185,6 +190,7 @@ MCU_COMMON_SRC = \
             STM32/debug_uart_stm32n6xx.c \
             STM32/timer_hal.c \
             STM32/timer_stm32n6xx.c \
+            STM32/camera_control_stm32.c \
             drivers/adc.c \
             drivers/serial_escserial.c \
             STM32/startup/system_stm32n6xx_s.c
